@@ -9,16 +9,15 @@
 package org.opensearch.plugin.insights.core.service.categorizer;
 
 import static org.opensearch.plugin.insights.core.service.categorizer.QueryShapeGenerator.ONE_SPACE_INDENT;
-import static org.opensearch.plugin.insights.core.service.categorizer.QueryShapeGenerator.QUERY_FIELD_DATA_MAP;
 
 import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.function.Function;
 import org.apache.lucene.search.BooleanClause;
 import org.opensearch.common.SetOnce;
+import org.opensearch.index.query.AbstractQueryBuilder;
 import org.opensearch.index.query.QueryBuilder;
 import org.opensearch.index.query.QueryBuilderVisitor;
 
@@ -35,12 +34,18 @@ public final class QueryShapeVisitor implements QueryBuilderVisitor {
         queryType.set(queryBuilder.getName());
 
         List<String> fieldDataList = new ArrayList<>();
-        List<Function<Object, String>> methods = QUERY_FIELD_DATA_MAP.get(queryBuilder.getClass());
-        if (methods != null) {
-            for (Function<Object, String> lambda : methods) {
-                fieldDataList.add(lambda.apply(queryBuilder));
-            }
-        }
+        fieldDataList.add(((AbstractQueryBuilder) queryBuilder).fieldName());
+        fieldDataList.add(((AbstractQueryBuilder) queryBuilder).getFieldType());
+
+        // List<Function<Object, String>> methods = QUERY_FIELD_DATA_MAP.get(queryBuilder.getClass());
+        // if (methods != null) {
+        // for (Function<Object, String> lambda : methods) {
+        // fieldDataList.add(lambda.apply(queryBuilder));
+        // }
+        // }
+        // if (queryBuilder instanceof AbstractQueryBuilder) {
+        // fieldDataList.add(((AbstractQueryBuilder) queryBuilder).getFieldType());
+        // }
         fieldData.set(String.join(", ", fieldDataList));
     }
 

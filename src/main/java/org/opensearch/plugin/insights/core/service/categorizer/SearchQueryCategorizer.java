@@ -87,9 +87,10 @@ public final class SearchQueryCategorizer {
         incrementQueryAggregationCounters(source.aggregations(), measurements);
         incrementQuerySortCounters(source.sorts(), measurements);
 
-        if (logger.isTraceEnabled()) {
+        if (true) {
             String searchShape = QueryShapeGenerator.buildShape(source, true);
             logger.trace(searchShape);
+            // System.out.println(searchShape);
         }
     }
 

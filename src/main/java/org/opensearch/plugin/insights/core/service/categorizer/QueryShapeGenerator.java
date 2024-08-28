@@ -18,6 +18,7 @@ import org.apache.lucene.util.BytesRef;
 import org.opensearch.common.hash.MurmurHash3;
 import org.opensearch.core.common.io.stream.NamedWriteable;
 import org.opensearch.index.query.AbstractGeometryQueryBuilder;
+import org.opensearch.index.query.AbstractQueryBuilder;
 import org.opensearch.index.query.CommonTermsQueryBuilder;
 import org.opensearch.index.query.ExistsQueryBuilder;
 import org.opensearch.index.query.FieldMaskingSpanQueryBuilder;
@@ -243,6 +244,9 @@ public class QueryShapeGenerator {
             for (Function<Object, String> lambda : methods) {
                 fieldDataList.add(lambda.apply(builder));
             }
+        }
+        if (builder instanceof AbstractQueryBuilder) {
+            fieldDataList.add(((AbstractQueryBuilder) builder).getFieldType());
         }
         return " [" + String.join(", ", fieldDataList) + "]";
     }
