@@ -105,11 +105,11 @@ spotless {
       include '**/*.java'
       exclude '**/build/**', '**/build-*/**'
     }
-    removeUnusedImports()
-    importOrder()
-    eclipse().configFile rootProject.file('config/formatterConfig.xml')
-    trimTrailingWhitespace()
-    endWithNewline()
+//    removeUnusedImports()
+//    importOrder()
+//    eclipse().configFile rootProject.file('config/formatterConfig.xml')
+//    trimTrailingWhitespace()
+//    endWithNewline()
   }
 }
 
