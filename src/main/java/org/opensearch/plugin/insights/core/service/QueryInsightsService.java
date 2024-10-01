@@ -23,9 +23,9 @@ import java.util.stream.Collectors;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.opensearch.client.Client;
+import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.inject.Inject;
 import org.opensearch.common.lifecycle.AbstractLifecycleComponent;
-import org.opensearch.common.settings.ClusterSettings;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.common.unit.TimeValue;
 import org.opensearch.core.xcontent.NamedXContentRegistry;
@@ -102,7 +102,7 @@ public class QueryInsightsService extends AbstractLifecycleComponent {
     /**
      * Constructor of the QueryInsightsService
      *
-     * @param clusterSettings OpenSearch cluster level settings
+     * @param clusterService OpenSearch cluster service
      * @param threadPool The OpenSearch thread pool to run async tasks
      * @param client OS client
      * @param metricsRegistry Opentelemetry Metrics registry
@@ -110,7 +110,7 @@ public class QueryInsightsService extends AbstractLifecycleComponent {
      */
     @Inject
     public QueryInsightsService(
-        final ClusterSettings clusterSettings,
+        final ClusterService clusterService,
         final ThreadPool threadPool,
         final Client client,
         final MetricsRegistry metricsRegistry,
@@ -132,16 +132,20 @@ public class QueryInsightsService extends AbstractLifecycleComponent {
             );
         }
         for (MetricType type : MetricType.allMetricTypes()) {
-            clusterSettings.addSettingsUpdateConsumer(
-                getExporterSettings(type),
-                (settings -> setExporterAndReader(type, settings)),
-                (settings -> validateExporterAndReaderConfig(type, settings))
-            );
+            clusterService.getClusterSettings()
+                .addSettingsUpdateConsumer(
+                    getExporterSettings(type),
+                    (settings -> setExporterAndReader(type, settings)),
+                    (settings -> validateExporterAndReaderConfig(type, settings))
+                );
         }
 
         this.searchQueryCategorizer = SearchQueryCategorizer.getInstance(metricsRegistry);
         this.enableSearchQueryMetricsFeature(false);
         this.groupingType = DEFAULT_GROUPING_TYPE;
+
+        // initialize operational metrics counters
+        OperationalMetricsCounter.initialize(clusterService.getClusterName().toString(), metricsRegistry);
     }
 
     /**

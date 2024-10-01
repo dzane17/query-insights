@@ -12,10 +12,9 @@ import java.util.Collection;
 import java.util.List;
 import java.util.function.Supplier;
 import org.opensearch.action.ActionRequest;
-import org.opensearch.client.Client;
 import org.opensearch.cluster.metadata.IndexNameExpressionResolver;
 import org.opensearch.cluster.node.DiscoveryNodes;
-import org.opensearch.cluster.service.ClusterService;
+import org.opensearch.common.lifecycle.LifecycleComponent;
 import org.opensearch.common.settings.ClusterSettings;
 import org.opensearch.common.settings.IndexScopedSettings;
 import org.opensearch.common.settings.Setting;
@@ -24,12 +23,7 @@ import org.opensearch.common.settings.SettingsFilter;
 import org.opensearch.common.unit.TimeValue;
 import org.opensearch.common.util.concurrent.OpenSearchExecutors;
 import org.opensearch.core.action.ActionResponse;
-import org.opensearch.core.common.io.stream.NamedWriteableRegistry;
-import org.opensearch.core.xcontent.NamedXContentRegistry;
-import org.opensearch.env.Environment;
-import org.opensearch.env.NodeEnvironment;
 import org.opensearch.plugin.insights.core.listener.QueryInsightsListener;
-import org.opensearch.plugin.insights.core.metrics.OperationalMetricsCounter;
 import org.opensearch.plugin.insights.core.service.QueryInsightsService;
 import org.opensearch.plugin.insights.rules.action.health_stats.HealthStatsAction;
 import org.opensearch.plugin.insights.rules.action.top_queries.TopQueriesAction;
@@ -42,16 +36,10 @@ import org.opensearch.plugin.insights.settings.QueryInsightsSettings;
 import org.opensearch.plugins.ActionPlugin;
 import org.opensearch.plugins.Plugin;
 import org.opensearch.plugins.TelemetryAwarePlugin;
-import org.opensearch.repositories.RepositoriesService;
 import org.opensearch.rest.RestController;
 import org.opensearch.rest.RestHandler;
-import org.opensearch.script.ScriptService;
-import org.opensearch.telemetry.metrics.MetricsRegistry;
-import org.opensearch.telemetry.tracing.Tracer;
 import org.opensearch.threadpool.ExecutorBuilder;
 import org.opensearch.threadpool.ScalingExecutorBuilder;
-import org.opensearch.threadpool.ThreadPool;
-import org.opensearch.watcher.ResourceWatcherService;
 
 /**
  * Plugin class for Query Insights.
@@ -63,32 +51,8 @@ public class QueryInsightsPlugin extends Plugin implements ActionPlugin, Telemet
     public QueryInsightsPlugin() {}
 
     @Override
-    public Collection<Object> createComponents(
-        final Client client,
-        final ClusterService clusterService,
-        final ThreadPool threadPool,
-        final ResourceWatcherService resourceWatcherService,
-        final ScriptService scriptService,
-        final NamedXContentRegistry xContentRegistry,
-        final Environment environment,
-        final NodeEnvironment nodeEnvironment,
-        final NamedWriteableRegistry namedWriteableRegistry,
-        final IndexNameExpressionResolver indexNameExpressionResolver,
-        final Supplier<RepositoriesService> repositoriesServiceSupplier,
-        final Tracer tracer,
-        final MetricsRegistry metricsRegistry
-    ) {
-        // initialize operational metrics counters
-        OperationalMetricsCounter.initialize(clusterService.getClusterName().toString(), metricsRegistry);
-        // create top n queries service
-        final QueryInsightsService queryInsightsService = new QueryInsightsService(
-            clusterService.getClusterSettings(),
-            threadPool,
-            client,
-            metricsRegistry,
-            xContentRegistry
-        );
-        return List.of(queryInsightsService, new QueryInsightsListener(clusterService, queryInsightsService, false));
+    public Collection<Class<? extends LifecycleComponent>> getGuiceServiceClasses() {
+        return List.of(QueryInsightsService.class, QueryInsightsListener.class);
     }
 
     @Override

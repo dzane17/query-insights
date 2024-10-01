@@ -30,8 +30,12 @@ import org.opensearch.action.search.SearchRequestOperationsListener;
 import org.opensearch.action.search.SearchTask;
 import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.inject.Inject;
+import org.opensearch.common.lifecycle.Lifecycle;
+import org.opensearch.common.lifecycle.LifecycleComponent;
+import org.opensearch.common.lifecycle.LifecycleListener;
 import org.opensearch.core.tasks.resourcetracker.TaskResourceInfo;
 import org.opensearch.core.xcontent.ToXContent;
+import org.opensearch.indices.IndicesService;
 import org.opensearch.plugin.insights.core.metrics.OperationalMetric;
 import org.opensearch.plugin.insights.core.metrics.OperationalMetricsCounter;
 import org.opensearch.plugin.insights.core.service.QueryInsightsService;
@@ -47,7 +51,7 @@ import org.opensearch.tasks.Task;
  * It forwards query-related data to the appropriate query insights stores,
  * either for each request or for each phase.
  */
-public final class QueryInsightsListener extends SearchRequestOperationsListener {
+public final class QueryInsightsListener extends SearchRequestOperationsListener implements LifecycleComponent {
     private static final ToXContent.Params FORMAT_PARAMS = new ToXContent.MapParams(Collections.singletonMap("pretty", "false"));
 
     private static final Logger log = LogManager.getLogger(QueryInsightsListener.class);
@@ -60,10 +64,15 @@ public final class QueryInsightsListener extends SearchRequestOperationsListener
      *
      * @param clusterService       The Node's cluster service.
      * @param queryInsightsService The topQueriesByLatencyService associated with this listener
+     * @param indicesService The domain's indices service
      */
     @Inject
-    public QueryInsightsListener(final ClusterService clusterService, final QueryInsightsService queryInsightsService) {
-        this(clusterService, queryInsightsService, false);
+    public QueryInsightsListener(
+        final ClusterService clusterService,
+        final QueryInsightsService queryInsightsService,
+        final IndicesService indicesService
+    ) {
+        this(clusterService, queryInsightsService, false, indicesService);
     }
 
     /**
@@ -72,11 +81,13 @@ public final class QueryInsightsListener extends SearchRequestOperationsListener
      * @param clusterService       The Node's cluster service.
      * @param queryInsightsService The topQueriesByLatencyService associated with this listener
      * @param initiallyEnabled Is the listener initially enabled/disabled
+     * @param indicesService The domain's indices service
      */
     public QueryInsightsListener(
         final ClusterService clusterService,
         final QueryInsightsService queryInsightsService,
-        boolean initiallyEnabled
+        boolean initiallyEnabled,
+        final IndicesService indicesService
     ) {
         super(initiallyEnabled);
         this.clusterService = clusterService;
@@ -268,4 +279,33 @@ public final class QueryInsightsListener extends SearchRequestOperationsListener
         }
     }
 
+    @Override
+    public Lifecycle.State lifecycleState() {
+        return null;
+    }
+
+    @Override
+    public void addLifecycleListener(LifecycleListener lifecycleListener) {
+
+    }
+
+    @Override
+    public void removeLifecycleListener(LifecycleListener lifecycleListener) {
+
+    }
+
+    @Override
+    public void start() {
+
+    }
+
+    @Override
+    public void stop() {
+
+    }
+
+    @Override
+    public void close() {
+
+    }
 }
