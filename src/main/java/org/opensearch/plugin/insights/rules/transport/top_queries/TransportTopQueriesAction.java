@@ -28,7 +28,6 @@ import org.opensearch.plugin.insights.rules.action.top_queries.TopQueriesRequest
 import org.opensearch.plugin.insights.rules.action.top_queries.TopQueriesResponse;
 import org.opensearch.plugin.insights.rules.model.MetricType;
 import org.opensearch.plugin.insights.rules.model.SearchQueryRecord;
-import org.opensearch.plugin.insights.settings.QueryInsightsSettings;
 import org.opensearch.threadpool.ThreadPool;
 import org.opensearch.transport.TransportRequest;
 import org.opensearch.transport.TransportService;
@@ -81,21 +80,11 @@ public class TransportTopQueriesAction extends TransportNodesAction<
         final List<TopQueries> responses,
         final List<FailedNodeException> failures
     ) {
-        int size;
-        switch (topQueriesRequest.getMetricType()) {
-            case CPU:
-                size = clusterService.getClusterSettings().get(QueryInsightsSettings.TOP_N_CPU_QUERIES_SIZE);
-                break;
-            case MEMORY:
-                size = clusterService.getClusterSettings().get(QueryInsightsSettings.TOP_N_MEMORY_QUERIES_SIZE);
-                break;
-            default:
-                size = clusterService.getClusterSettings().get(QueryInsightsSettings.TOP_N_LATENCY_QUERIES_SIZE);
-        }
         final String from = topQueriesRequest.getFrom();
         final String to = topQueriesRequest.getTo();
         final String id = topQueriesRequest.getId();
         if (from != null && to != null) {
+            // If from/to param defined, fetch and append historical data to response
             responses.add(
                 new TopQueries(
                     clusterService.localNode(),
@@ -103,7 +92,7 @@ public class TransportTopQueriesAction extends TransportNodesAction<
                 )
             );
         }
-        return new TopQueriesResponse(clusterService.getClusterName(), responses, failures, size, topQueriesRequest.getMetricType());
+        return new TopQueriesResponse(clusterService.getClusterName(), responses, failures, topQueriesRequest.getMetricType());
     }
 
     @Override
