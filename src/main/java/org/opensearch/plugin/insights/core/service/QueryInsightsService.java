@@ -8,6 +8,7 @@
 
 package org.opensearch.plugin.insights.core.service;
 
+import static org.opensearch.common.util.concurrent.FutureUtils.cancel;
 import static org.opensearch.plugin.insights.core.service.TopQueriesService.TOP_QUERIES_EXPORTER_ID;
 import static org.opensearch.plugin.insights.core.service.TopQueriesService.TOP_QUERIES_READER_ID;
 import static org.opensearch.plugin.insights.core.service.TopQueriesService.isTopQueriesIndex;
@@ -22,6 +23,11 @@ import static org.opensearch.plugin.insights.settings.QueryInsightsSettings.TOP_
 import static org.opensearch.plugin.insights.settings.QueryInsightsSettings.TOP_QUERIES_INDEX_PATTERN_GLOB;
 
 import java.io.IOException;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -31,6 +37,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 import org.apache.logging.log4j.LogManager;
@@ -38,9 +45,11 @@ import org.apache.logging.log4j.Logger;
 import org.opensearch.action.admin.cluster.state.ClusterStateRequest;
 import org.opensearch.action.support.IndicesOptions;
 import org.opensearch.cluster.metadata.IndexMetadata;
+import org.opensearch.cluster.node.DiscoveryNodeRole;
 import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.inject.Inject;
 import org.opensearch.common.lifecycle.AbstractLifecycleComponent;
+import org.opensearch.common.lifecycle.LifecycleListener;
 import org.opensearch.common.unit.TimeValue;
 import org.opensearch.core.action.ActionListener;
 import org.opensearch.core.xcontent.NamedXContentRegistry;
@@ -101,6 +110,7 @@ public class QueryInsightsService extends AbstractLifecycleComponent {
      * the service closed concurrently.
      */
     protected volatile List<Scheduler.Cancellable> scheduledFutures;
+    protected volatile ScheduledFuture deleteIndicesScheduledFuture;
 
     /**
      * Factory for validating and creating exporters
@@ -567,6 +577,48 @@ public class QueryInsightsService extends AbstractLifecycleComponent {
         }
     }
 
+    /**
+     * Schedules a daily task at 00:05 UTC to delete expired Top N indices.
+     *
+     * @see #deleteExpiredTopNIndices()
+     */
+    private void scheduleDeleteExpiredIndicesJob() {
+        if (!clusterService.isStateInitialised()) {
+            logger.info("clusterApplierService state not initialized");
+            return;
+        }
+        if (clusterService.localNode().getRoles().contains(DiscoveryNodeRole.CLUSTER_MANAGER_ROLE)) {
+            if (deleteIndicesScheduledFuture != null && !deleteIndicesScheduledFuture.isCancelled()) {
+                logger.info("Query Insights local index delete job already exists");
+                return;
+            }
+            // initialDelay = duration from now to next day 00:05 UTC
+            long initialDelay = getInitialDelay(Instant.now()) + Duration.ofMinutes(5).toMillis();
+            deleteIndicesScheduledFuture = threadPool.scheduler().scheduleWithFixedDelay(() -> {
+                try {
+                    deleteExpiredTopNIndices();
+                } catch (Exception e) {
+                    logger.error("Error occurred while deleting expired indices:", e);
+                }
+            }, initialDelay, Duration.ofDays(1).toMillis(), TimeUnit.MILLISECONDS);
+        }
+    }
+
+    /**
+     * Calculates the duration until the next UTC midnight (00:00:00).
+     * <p>
+     * This method computes the time difference between the given {@code Instant} and the start of the next UTC day
+     * at midnight (00:00:00). It returns the duration as a long in milliseconds.
+     *
+     * @param now The current time as an {@link Instant}.
+     * @return A long representing the time delay (in milliseconds) until the next UTC midnight.
+     */
+    static long getInitialDelay(final Instant now) {
+        // Calculate the start of the next UTC day (00:00:00)
+        final Instant startOfNextDay = now.truncatedTo(ChronoUnit.DAYS).plus(1, ChronoUnit.DAYS);
+        return Duration.between(now, startOfNextDay).toMillis();
+    }
+
     @Override
     protected void doStart() {
         if (isAnyFeatureEnabled()) {
@@ -578,14 +630,27 @@ public class QueryInsightsService extends AbstractLifecycleComponent {
                     QueryInsightsSettings.QUERY_INSIGHTS_EXECUTOR
                 )
             );
-            scheduledFutures.add(
-                threadPool.scheduleWithFixedDelay(
-                    this::deleteExpiredTopNIndices,
-                    new TimeValue(1, TimeUnit.DAYS), // Check for deletable indices once per day
-                    QueryInsightsSettings.QUERY_INSIGHTS_EXECUTOR
-                )
-            );
+            deleteIndicesScheduledFuture = null;
+            scheduleDeleteExpiredIndicesJob();
         }
+
+        // Register a cluster manager listener
+        // Reschedule DeleteExpiredIndices job anytime cluster manager node changes
+        clusterService.getClusterManagerService().addLifecycleListener(new LifecycleListener() {
+            @Override
+            public void afterStart() {
+                if (isAnyFeatureEnabled()) {
+                    scheduleDeleteExpiredIndicesJob();
+                }
+            }
+
+            @Override
+            public void beforeStop() {
+                if (deleteIndicesScheduledFuture != null) {
+                    cancel(deleteIndicesScheduledFuture);
+                }
+            }
+        });
     }
 
     @Override
@@ -596,6 +661,9 @@ public class QueryInsightsService extends AbstractLifecycleComponent {
                     cancellable.cancel();
                 }
             }
+        }
+        if (deleteIndicesScheduledFuture != null) {
+            cancel(deleteIndicesScheduledFuture);
         }
     }
 
@@ -646,12 +714,16 @@ public class QueryInsightsService extends AbstractLifecycleComponent {
 
                 client.admin().cluster().state(clusterStateRequest, ActionListener.wrap(clusterStateResponse -> {
                     final Map<String, IndexMetadata> indexMetadataMap = clusterStateResponse.getState().metadata().indices();
-                    final long expirationMillisLong = System.currentTimeMillis() - TimeUnit.DAYS.toMillis(
+                    final long startOfTodayUtcMillis = LocalDateTime.now(ZoneOffset.UTC)    // Today at 00:00 UTC
+                        .truncatedTo(ChronoUnit.DAYS)
+                        .toInstant(ZoneOffset.UTC)
+                        .toEpochMilli();
+                    final long expirationMillisLong = startOfTodayUtcMillis - TimeUnit.DAYS.toMillis(
                         ((LocalIndexExporter) topQueriesExporter).getDeleteAfter()
                     );
                     for (Map.Entry<String, IndexMetadata> entry : indexMetadataMap.entrySet()) {
                         String indexName = entry.getKey();
-                        if (isTopQueriesIndex(indexName, entry.getValue()) && entry.getValue().getCreationDate() <= expirationMillisLong) {
+                        if (isTopQueriesIndex(indexName, entry.getValue()) && entry.getValue().getCreationDate() < expirationMillisLong) {
                             // delete this index
                             localIndexExporter.deleteSingleIndex(indexName, client);
                         }
