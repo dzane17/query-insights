@@ -590,13 +590,16 @@ public class QueryInsightsService extends AbstractLifecycleComponent {
      * @return A long representing the time delay (in milliseconds) until the next UTC midnight.
      */
     static long getInitialDelay(final Instant now) {
+        logger.info("in getInitialDelay");
         // Calculate the start of the next UTC day (00:00:00)
         final Instant startOfNextDay = now.truncatedTo(ChronoUnit.DAYS).plus(1, ChronoUnit.DAYS);
+        logger.info("initialDelay = [{}]", Duration.between(now, startOfNextDay).toMillis());
         return Duration.between(now, startOfNextDay).toMillis();
     }
 
     @Override
     protected void doStart() {
+        logger.info("in doStart");
         if (isAnyFeatureEnabled()) {
             scheduledFutures = new ArrayList<>();
             scheduledFutures.add(
@@ -607,16 +610,21 @@ public class QueryInsightsService extends AbstractLifecycleComponent {
                 )
             );
             if (threadPool.scheduler() != null) {
+                logger.info("scheduling job");
                 deleteIndicesScheduledFuture = threadPool.scheduler().scheduleWithFixedDelay(() -> {
                     try {
                         if (clusterService.isStateInitialised()
                             && clusterService.localNode().getRoles().contains(DiscoveryNodeRole.CLUSTER_MANAGER_ROLE)) {
+                            logger.info("calling deleteExpiredTopNIndices on cluster manager node");
                             deleteExpiredTopNIndices();
+                        } else {
+                            logger.info("skipping deleteExpiredTopNIndices on non-cluster manager");
                         }
                     } catch (Exception e) {
                         logger.error("Error occurred while deleting expired indices:", e);
                     }
                 }, getInitialDelay(Instant.now()) + Duration.ofMinutes(5).toMillis(), Duration.ofDays(1).toMillis(), TimeUnit.MILLISECONDS);
+                logger.info("successfully scheduled job");
             } else {
                 logger.error("Unable to schedule Query Insights delete job. threadPool.scheduler() is null");
             }
@@ -670,6 +678,7 @@ public class QueryInsightsService extends AbstractLifecycleComponent {
      * Delete Top N local indices older than the configured data retention period
      */
     void deleteExpiredTopNIndices() {
+        logger.info("starting deleteExpiredTopNIndices");
         final QueryInsightsExporter topQueriesExporter = queryInsightsExporterFactory.getExporter(TOP_QUERIES_EXPORTER_ID);
         if (topQueriesExporter != null && topQueriesExporter.getClass() == LocalIndexExporter.class) {
             final LocalIndexExporter localIndexExporter = (LocalIndexExporter) topQueriesExporter;
