@@ -456,12 +456,6 @@ public class QueryInsightsService extends AbstractLifecycleComponent {
         // Configure the exporter for TopQueriesService in QueryInsightsService
         final QueryInsightsExporter currentExporter = queryInsightsExporterFactory.getExporter(TOP_QUERIES_EXPORTER_ID);
         final QueryInsightsReader currentReader = queryInsightsReaderFactory.getReader(TOP_QUERIES_READER_ID);
-        // Handles the cleanup when sink type is changed from LocalIndexExporter.
-        // Clears all local indices from storage when the exporter configuration
-        // is switched away from LocalIndexExporter type.
-        if (this.sinkType == SinkType.LOCAL_INDEX && currentExporter != null) {
-            deleteAllTopNIndices(client, (LocalIndexExporter) currentExporter);
-        }
 
         // Close the current exporter and reader
         if (currentExporter != null) {
@@ -702,26 +696,6 @@ public class QueryInsightsService extends AbstractLifecycleComponent {
                 }, exception -> { logger.error("Error while deleting expired top_queries-* indices: ", exception); }));
             });
         }
-    }
-
-    /**
-     * Deletes all Top N local indices
-     *
-     * @param client OpenSearch Client
-     * @param localIndexExporter the exporter to handle the local index operations
-     */
-    void deleteAllTopNIndices(final Client client, final LocalIndexExporter localIndexExporter) {
-        final ClusterStateRequest clusterStateRequest = IndexDiscoveryHelper.createClusterStateRequest(IndicesOptions.strictExpand());
-
-        client.admin().cluster().state(clusterStateRequest, ActionListener.wrap(clusterStateResponse -> {
-            clusterStateResponse.getState()
-                .metadata()
-                .indices()
-                .entrySet()
-                .stream()
-                .filter(entry -> isTopQueriesIndex(entry.getKey(), entry.getValue()))
-                .forEach(entry -> localIndexExporter.deleteSingleIndex(entry.getKey(), client));
-        }, exception -> { logger.error("Error while deleting expired top_queries-* indices: ", exception); }));
     }
 
     /**
