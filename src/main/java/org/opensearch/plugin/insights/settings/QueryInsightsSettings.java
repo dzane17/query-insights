@@ -327,6 +327,16 @@ public class QueryInsightsSettings {
     );
 
     /**
+     * Settings for S3 exporter bucket name
+     */
+    public static final Setting<String> S3_EXPORTER_BUCKET_NAME = Setting.simpleString(
+        TOP_N_QUERIES_EXPORTER_PREFIX + ".s3_bucket_name",
+        "",
+        Setting.Property.NodeScope,
+        Setting.Property.Dynamic
+    );
+
+    /**
      * Get the enabled setting based on type
      * @param type MetricType
      * @return enabled setting
