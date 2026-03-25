@@ -671,7 +671,14 @@ public class SearchQueryRecord implements ToXContentObject, Writeable {
         out.writeMap(
             attributes,
             (stream, attribute) -> Attribute.writeTo(out, attribute),
-            (stream, attributeValue) -> Attribute.writeValueTo(out, attributeValue)
+            (stream, attributeValue) -> {
+                // For SOURCE, prefer the original SearchSourceBuilder to avoid lossy SourceString round-trip
+                if (attributeValue instanceof SourceString && searchSourceBuilder != null) {
+                    searchSourceBuilder.writeTo(out);
+                } else {
+                    Attribute.writeValueTo(out, attributeValue);
+                }
+            }
         );
     }
 

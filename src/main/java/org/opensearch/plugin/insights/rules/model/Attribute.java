@@ -15,7 +15,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import org.apache.lucene.util.ArrayUtil;
-import org.opensearch.Version;
 import org.opensearch.core.common.io.stream.StreamInput;
 import org.opensearch.core.common.io.stream.StreamOutput;
 import org.opensearch.core.common.io.stream.Writeable;
@@ -145,17 +144,13 @@ public enum Attribute {
         if (attributeValue instanceof List) {
             out.writeList((List<? extends Writeable>) attributeValue);
         } else if (attributeValue instanceof SourceString) {
-            if (out.getVersion().onOrAfter(Version.V_3_5_0)) {
-                out.writeString(((SourceString) attributeValue).getValue());
-            } else {
-                // Convert source to SearchSourceBuilder
-                String sourceStr = ((SourceString) attributeValue).getValue();
-                SearchSourceBuilder ssb = SourceString.toSearchSourceBuilder(sourceStr, NamedXContentRegistry.EMPTY);
-                if (ssb == null) {
-                    ssb = new SearchSourceBuilder();
-                }
-                ssb.writeTo(out);
+            // Always write as SearchSourceBuilder for wire compatibility (no version gating on 3.3)
+            String sourceStr = ((SourceString) attributeValue).getValue();
+            SearchSourceBuilder ssb = SourceString.toSearchSourceBuilder(sourceStr, NamedXContentRegistry.EMPTY);
+            if (ssb == null) {
+                ssb = new SearchSourceBuilder();
             }
+            ssb.writeTo(out);
         } else if (attributeValue instanceof SearchSourceBuilder) {
             ((SearchSourceBuilder) attributeValue).writeTo(out);
         } else if (attributeValue instanceof GroupingType) {
@@ -177,11 +172,8 @@ public enum Attribute {
         if (attribute == Attribute.TASK_RESOURCE_USAGES) {
             return in.readList(TaskResourceInfo::readFromStream);
         } else if (attribute == Attribute.SOURCE) {
-            if (in.getVersion().onOrAfter(Version.V_3_5_0)) {
-                return new SourceString(in.readString());
-            } else {
-                return new SourceString(new SearchSourceBuilder(in).toString());
-            }
+            // Always read as SearchSourceBuilder for wire compatibility (no version gating on 3.3)
+            return new SourceString(new SearchSourceBuilder(in).toString());
         } else if (attribute == Attribute.GROUP_BY) {
             return GroupingType.valueOf(in.readString().toUpperCase(Locale.ROOT));
         } else {
