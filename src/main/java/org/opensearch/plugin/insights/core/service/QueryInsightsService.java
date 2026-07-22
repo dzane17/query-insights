@@ -26,15 +26,19 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.LongSupplier;
 import java.util.stream.Collectors;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -44,6 +48,7 @@ import org.opensearch.common.lifecycle.AbstractLifecycleComponent;
 import org.opensearch.common.unit.TimeValue;
 import org.opensearch.common.util.concurrent.FutureUtils;
 import org.opensearch.core.xcontent.NamedXContentRegistry;
+import org.opensearch.plugin.insights.core.auth.UserPrincipalContext;
 import org.opensearch.plugin.insights.core.exporter.QueryInsightsExporter;
 import org.opensearch.plugin.insights.core.exporter.QueryInsightsExporterFactory;
 import org.opensearch.plugin.insights.core.exporter.RemoteRepositoryExporter;
@@ -63,6 +68,7 @@ import org.opensearch.plugin.insights.rules.model.SearchQueryRecord;
 import org.opensearch.plugin.insights.rules.model.healthStats.QueryInsightsHealthStats;
 import org.opensearch.plugin.insights.rules.model.healthStats.TopQueriesHealthStats;
 import org.opensearch.plugin.insights.settings.QueryInsightsSettings;
+import org.opensearch.tasks.TaskManager;
 import org.opensearch.telemetry.metrics.MetricsRegistry;
 import org.opensearch.threadpool.Scheduler;
 import org.opensearch.threadpool.ThreadPool;
@@ -144,6 +150,26 @@ public class QueryInsightsService extends AbstractLifecycleComponent {
     private LocalIndexLifecycleManager localIndexLifecycleManager;
 
     private final FinishedQueriesCache finishedQueriesCache;
+    private final ConcurrentHashMap<String, TimestampedUserInfo> liveQueryUserMap = new ConcurrentHashMap<>();
+    private final AtomicBoolean evictionInProgress = new AtomicBoolean(false);
+    private volatile TaskManager taskManager;
+
+    private static final int USER_INFO_MAX_SIZE = 1000;
+
+    /**
+     * Time source for live query user info TTL/eviction. Overridable in tests to advance time deterministically.
+     */
+    private LongSupplier clock = System::currentTimeMillis;
+
+    private static class TimestampedUserInfo {
+        final UserPrincipalContext.UserPrincipalInfo info;
+        final long timestamp;
+
+        TimestampedUserInfo(UserPrincipalContext.UserPrincipalInfo info, long timestamp) {
+            this.info = info;
+            this.timestamp = timestamp;
+        }
+    }
 
     SinkType sinkType;
 
@@ -582,6 +608,7 @@ public class QueryInsightsService extends AbstractLifecycleComponent {
         }
 
         finishedQueriesCache.stop();
+        liveQueryUserMap.clear();
 
         FutureUtils.cancel(deleteIndicesScheduledFuture);
     }
@@ -681,6 +708,131 @@ public class QueryInsightsService extends AbstractLifecycleComponent {
      */
     public FinishedQueriesCache getFinishedQueriesCache() {
         return finishedQueriesCache;
+    }
+
+    /**
+     * Sets the TaskManager used for liveness checks during eviction of orphaned entries
+     * from the live query user info map.
+     *
+     * @param taskManager the cluster TaskManager
+     */
+    public void setTaskManager(TaskManager taskManager) {
+        this.taskManager = taskManager;
+    }
+
+    public void putLiveQueryUserInfo(String taskId, UserPrincipalContext.UserPrincipalInfo userInfo) {
+        if (userInfo == null) {
+            return;
+        }
+        if (liveQueryUserMap.size() >= USER_INFO_MAX_SIZE && evictionInProgress.compareAndSet(false, true)) {
+            try {
+                // Remove entries whose tasks are no longer running (orphaned entries).
+                // Keys are "nodeId:taskId" — we rely on remove-on-finish for normal cleanup,
+                // but orphans may remain if onRequestEnd was never called (e.g., node disconnect).
+                TaskManager tm = this.taskManager;
+                if (tm != null) {
+                    // Liveness sweep: drop keys where the task is gone
+                    liveQueryUserMap.keySet().removeIf(key -> {
+                        int sep = key.indexOf(':');
+                        if (sep <= 0) return false;
+                        try {
+                            long parsedTaskId = Long.parseLong(key.substring(sep + 1));
+                            return tm.getTask(parsedTaskId) == null;
+                        } catch (NumberFormatException e) {
+                            return false;
+                        }
+                    });
+                } else {
+                    // Fallback: TaskManager not yet available, remove oldest entries
+                    int overflow = liveQueryUserMap.size() - USER_INFO_MAX_SIZE + 1;
+                    if (overflow > 0) {
+                        liveQueryUserMap.entrySet()
+                            .stream()
+                            .sorted(Comparator.comparingLong(e -> e.getValue().timestamp))
+                            .limit(overflow)
+                            .map(Map.Entry::getKey)
+                            .collect(Collectors.toList())
+                            .forEach(liveQueryUserMap::remove);
+                    }
+                }
+            } finally {
+                evictionInProgress.set(false);
+            }
+        }
+        // If still at capacity after eviction, skip this insert rather than evicting a live entry
+        if (liveQueryUserMap.size() >= USER_INFO_MAX_SIZE) {
+            logger.warn(
+                "Live query user info map at capacity ({}). Skipping capture for task [{}]. "
+                    + "Consider increasing USER_INFO_MAX_SIZE if this persists.",
+                USER_INFO_MAX_SIZE,
+                taskId
+            );
+            return;
+        }
+        liveQueryUserMap.put(taskId, new TimestampedUserInfo(userInfo, clock.getAsLong()));
+    }
+
+    /**
+     * Resolve user info for a set of task keys from this node's local map.
+     * Only keys present (and not expired) in the local map are returned.
+     *
+     * @param taskKeys the task keys to resolve
+     * @return a map of task key to its captured user info
+     */
+    public Map<String, UserPrincipalContext.UserPrincipalInfo> getLiveQueryUserInfoForKeys(Collection<String> taskKeys) {
+        Map<String, UserPrincipalContext.UserPrincipalInfo> resolved = new HashMap<>();
+        if (taskKeys == null) {
+            return resolved;
+        }
+        for (String key : taskKeys) {
+            UserPrincipalContext.UserPrincipalInfo info = getLiveQueryUserInfo(key);
+            if (info != null) {
+                resolved.put(key, info);
+            }
+        }
+        return resolved;
+    }
+
+    public UserPrincipalContext.UserPrincipalInfo getLiveQueryUserInfo(String taskId) {
+        TimestampedUserInfo entry = liveQueryUserMap.get(taskId);
+        if (entry == null) return null;
+        return entry.info;
+    }
+
+    /**
+     * Build a consistent task key for live query user info map lookups.
+     * @param nodeId the node ID
+     * @param taskId the task ID number
+     * @return the composite key
+     */
+    public static String buildLiveQueryTaskKey(String nodeId, long taskId) {
+        return nodeId + ":" + taskId;
+    }
+
+    public void removeLiveQueryUserInfo(String taskId) {
+        liveQueryUserMap.remove(taskId);
+    }
+
+    /**
+     * Overrides the time source used for live query user info TTL/eviction.
+     * <p>
+     * <strong>Note:</strong> This method is intended for testing purposes only.
+     *
+     * @param clock the time source supplying the current epoch millis
+     */
+    void setLiveQueryUserInfoClock(final LongSupplier clock) {
+        this.clock = clock;
+    }
+
+    /**
+     * Returns the current number of entries in the live query user info map.
+     * <p>
+     * <strong>Note:</strong> This method is intended for testing purposes only.
+     *
+     * @return the map size
+     */
+    int getLiveQueryUserInfoMapSize() {
+        return liveQueryUserMap.size();
     }
 
     /**
